@@ -171,7 +171,10 @@ internal class RtspClient private constructor(builder: Builder) {
 
             // Try once again with credentials. OPTIONS command can be accepted without authentication.
             if (status == 401) {
-                digestRealmNonce = getHeaderWwwAuthenticateDigestRealmAndNonce(headers)
+                val newDigest = getHeaderWwwAuthenticateDigestRealmAndNonce(headers)
+                val isIpolis = digestRealmNonce?.first?.equals("iPOLiS", ignoreCase = true) == true
+                digestRealmNonce = newDigest ?: if(isIpolis) digestRealmNonce else null
+                
                 authToken = if (digestRealmNonce == null) {
                     val basicRealm = getHeaderWwwAuthenticateBasicRealm(headers)
                     if (TextUtils.isEmpty(basicRealm)) {
