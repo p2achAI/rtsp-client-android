@@ -40,7 +40,7 @@ internal class VideoDecoder(
     private val queue: VideoFrameQueue,
     private var videoDecoderType: DecoderType = DecoderType.HARDWARE,
     private val clientListener: RtspClientListener? = null,
-    private val frameRenderedListener: OnFrameRenderedListener? = null
+    private val frameRenderedListener: OnFrameRenderedListener? = null,
     private val sps: ByteArray? = null,
     private val pps: ByteArray? = null
 ) : Thread() {
