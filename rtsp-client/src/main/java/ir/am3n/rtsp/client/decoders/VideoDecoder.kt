@@ -41,6 +41,8 @@ internal class VideoDecoder(
     private var videoDecoderType: DecoderType = DecoderType.HARDWARE,
     private val clientListener: RtspClientListener? = null,
     private val frameRenderedListener: OnFrameRenderedListener? = null
+    private val sps: ByteArray? = null,
+    private val pps: ByteArray? = null
 ) : Thread() {
 
     companion object {
@@ -397,6 +399,10 @@ internal class VideoDecoder(
             // format.setFeatureEnabled(android.media.MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency, true)
             // Request low-latency for the decoder. Not all of the decoders support that.
             format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+        }
+        if (sps != null && pps != null) {
+            format.setByteBuffer("csd-0", ByteBuffer.wrap(sps))
+            format.setByteBuffer("csd-1", ByteBuffer.wrap(pps))
         }
         return format
     }
