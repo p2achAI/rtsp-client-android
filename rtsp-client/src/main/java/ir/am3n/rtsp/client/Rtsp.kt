@@ -377,7 +377,7 @@ class Rtsp {
             videoDecoder = VideoDecoder(
                 surface = null, surfaceView, requestMediaImage, requestYuv, requestBitmap,
                 videoMimeType, sdpInfo.videoTrack!!.frameWidth, sdpInfo.videoTrack!!.frameHeight, rotation = 0,
-                videoQueue, clientListener = clientListener
+                videoQueue, clientListener = clientListener, sps = sdpInfo.videoTrack!!.sps, pps = sdpInfo.videoTrack!!.pps
             )
             videoDecoder!!.start()
         }
