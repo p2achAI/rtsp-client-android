@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import ir.am3n.rtsp.client.Rtsp
+import androidx.core.content.edit
 
 @SuppressLint("LogNotTimber")
 class LiveViewModel : ViewModel() {
@@ -13,7 +14,7 @@ class LiveViewModel : ViewModel() {
     companion object {
         private const val TAG: String = "LiveViewModel"
         private const val RTSP_REQUEST_KEY = "rtsp_request"
-        private const val DEFAULT_RTSP_REQUEST = "rtsp://192.168.1.2:554/11"
+        private const val DEFAULT_RTSP_REQUEST = "rtsp://admin:security8113!@10.10.11.207/profile2/media.smp"
         private const val LIVE_PARAMS_FILENAME = "live_params"
     }
 
@@ -23,7 +24,8 @@ class LiveViewModel : ViewModel() {
         if (Rtsp.DEBUG) Log.v(TAG, "loadParams()")
         val pref = context.getSharedPreferences(LIVE_PARAMS_FILENAME, Context.MODE_PRIVATE)
         try {
-            rtspRequest.setValue(pref.getString(RTSP_REQUEST_KEY, DEFAULT_RTSP_REQUEST))
+            rtspRequest.value = DEFAULT_RTSP_REQUEST
+//            rtspRequest.setValue(pref.getString(RTSP_REQUEST_KEY, DEFAULT_RTSP_REQUEST))
         } catch (e: ClassCastException) {
             e.printStackTrace()
         }
@@ -31,9 +33,9 @@ class LiveViewModel : ViewModel() {
 
     fun saveParams(context: Context) {
         if (Rtsp.DEBUG) Log.v(TAG, "saveParams()")
-        val editor = context.getSharedPreferences(LIVE_PARAMS_FILENAME, Context.MODE_PRIVATE).edit()
-        editor.putString(RTSP_REQUEST_KEY, rtspRequest.value)
-        editor.apply()
+        context.getSharedPreferences(LIVE_PARAMS_FILENAME, Context.MODE_PRIVATE).edit {
+            putString(RTSP_REQUEST_KEY, rtspRequest.value)
+        }
     }
 
 }

@@ -25,4 +25,11 @@ data class YuvFrame(
         return result
     }
 
+    override fun toString(): String {
+        // Avoid dumping the whole byte array (Arrays.toString) which triggers massive allocations.
+        // Keep it lightweight to prevent jank/GC pressure when logs print YuvFrame.
+        val size = data.size
+        val fmtName = format?.toString() ?: "null"
+        return "YuvFrame(size=" + size + ", format=" + fmtName + ")"
+    }
 }
