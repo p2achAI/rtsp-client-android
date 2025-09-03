@@ -114,7 +114,7 @@ internal class VideoDecoder(
 
     /**
      * Get network latency in millis. Returns -1 if not supported.
-     */ㅅ
+     */
     fun getCurrentNetworkLatencyMillis(): Int {
         return networkLatency
     }
