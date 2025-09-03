@@ -52,6 +52,9 @@ internal class VideoDecoder(
         private val DEQUEUE_INPUT_TIMEOUT_US = TimeUnit.MILLISECONDS.toMicros(500)
         private val DEQUEUE_OUTPUT_BUFFER_TIMEOUT_US = TimeUnit.MILLISECONDS.toMicros(100)
 
+        // Fallback thresholds: if we see no output for this long, or too many consecutive TRY_AGAINs, switch to SW
+        private val WATCHDOG_NO_OUTPUT_MS = 2500L
+        private const val TRY_AGAIN_STREAK_LIMIT = 100
     }
 
     private val rect = Rect()
@@ -153,6 +156,8 @@ internal class VideoDecoder(
             }
 
             val bufferInfo = MediaCodec.BufferInfo()
+            var lastOutputOrFormatChangeMs = System.currentTimeMillis()
+            var tryAgainStreak = 0
 
             try {
                 // Map for calculating decoder rendering latency.
@@ -286,11 +291,28 @@ internal class VideoDecoder(
                                 MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED, MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                                     Log.d(TAG, "Decoder format changed: ${decoder.outputFormat}")
                                     frameAlreadyDequeued = true
+                                    tryAgainStreak = 0
+                                    lastOutputOrFormatChangeMs = System.currentTimeMillis()
                                 }
                                 // No any frames in queue
                                 MediaCodec.INFO_TRY_AGAIN_LATER -> {
                                     if (Rtsp.DEBUG) Log.d(TAG, "No output from decoder available")
                                     frameAlreadyDequeued = true
+                                    tryAgainStreak++
+                                    val now = System.currentTimeMillis()
+                                    if ((now - lastOutputOrFormatChangeMs) > WATCHDOG_NO_OUTPUT_MS ||
+                                        tryAgainStreak > TRY_AGAIN_STREAK_LIMIT) {
+                                        Log.w(TAG, "HW decoder appears stalled (no output ${now - lastOutputOrFormatChangeMs}ms, tryAgainStreak=$tryAgainStreak). Falling back to SW.")
+                                        // Fallback: stop current decoder and switch to software
+                                        stopAndReleaseVideoDecoder(decoder)
+                                        videoDecoderType = DecoderType.SOFTWARE
+                                        decoder = createVideoDecoderAndStart(DecoderType.SOFTWARE)
+                                        // Reset watchdog state after restart
+                                        tryAgainStreak = 0
+                                        lastOutputOrFormatChangeMs = System.currentTimeMillis()
+                                        // Skip to next loop iteration to re-enter dequeue with the new decoder
+                                        continue
+                                    }
                                 }
                                 // Frame decoded
                                 else -> {
@@ -310,6 +332,8 @@ internal class VideoDecoder(
                                             firstFrameDecoded = true
                                         }
                                         frameAlreadyDequeued = false
+                                        tryAgainStreak = 0
+                                        lastOutputOrFormatChangeMs = System.currentTimeMillis()
                                     } else {
                                         Log.e(TAG, "Obtaining frame failed w/ error code $outIndex")
                                     }
