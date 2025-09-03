@@ -38,7 +38,7 @@ internal class VideoDecoder(
     private val height: Int,
     private val rotation: Int, // 0, 90, 180, 270
     private val queue: VideoFrameQueue,
-    private var videoDecoderType: DecoderType = DecoderType.HARDWARE, //DecoderType.SOFTWARE, //
+    private var videoDecoderType: DecoderType = DecoderType.SOFTWARE, //DecoderType.HARDWARE, //
     private val clientListener: RtspClientListener? = null,
     private val frameRenderedListener: OnFrameRenderedListener? = null,
     private val sps: ByteArray? = null,
