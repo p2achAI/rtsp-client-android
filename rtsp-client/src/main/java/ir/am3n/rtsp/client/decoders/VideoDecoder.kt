@@ -53,8 +53,8 @@ internal class VideoDecoder(
         private val DEQUEUE_OUTPUT_BUFFER_TIMEOUT_US = TimeUnit.MILLISECONDS.toMicros(100)
 
         // Fallback thresholds: if we see no output for this long, or too many consecutive TRY_AGAINs, switch to SW
-        private val WATCHDOG_NO_OUTPUT_MS = 2500L
-        private const val TRY_AGAIN_STREAK_LIMIT = 100
+        private val WATCHDOG_NO_OUTPUT_MS = 250L
+        private const val TRY_AGAIN_STREAK_LIMIT = 30
     }
 
     private val rect = Rect()
