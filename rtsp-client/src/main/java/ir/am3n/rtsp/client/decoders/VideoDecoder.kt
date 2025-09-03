@@ -52,8 +52,6 @@ internal class VideoDecoder(
         private val DEQUEUE_INPUT_TIMEOUT_US = TimeUnit.MILLISECONDS.toMicros(500)
         private val DEQUEUE_OUTPUT_BUFFER_TIMEOUT_US = TimeUnit.MILLISECONDS.toMicros(100)
 
-        private val WATCHDOG_NO_OUTPUT_MS = 250L
-        private const val TRY_AGAIN_STREAK_LIMIT = 30
     }
 
     private val rect = Rect()
@@ -96,7 +94,7 @@ internal class VideoDecoder(
      * Currently used video decoder. Video decoder can be changed on runtime.
      * If videoDecoderType set to HARDWARE, it can be switched to SOFTWARE in case of decoding issue
      * (e.g. hardware decoder does not support the stream resolution).
-     * If videoDecoderType set to SOFTWARE, it will always remain SOFTWARE (no any changes).
+     * If videoDecoderType set to SOFTWARE, it will always remain SOFTWARE (no an`y changes).
      */
     fun getCurrentVideoDecoderType(): DecoderType {
         return videoDecoderType
@@ -116,7 +114,7 @@ internal class VideoDecoder(
 
     /**
      * Get network latency in millis. Returns -1 if not supported.
-     */
+     */ㅅ
     fun getCurrentNetworkLatencyMillis(): Int {
         return networkLatency
     }
@@ -142,7 +140,6 @@ internal class VideoDecoder(
         try {
             Log.i(TAG, "Starting hardware video decoder...")
             var decoder = try {
-//                createVideoDecoderAndStart(DecoderType.SOFTWARE)
                 createVideoDecoderAndStart(videoDecoderType)
             } catch (e: Throwable) {
                 Log.e(TAG, "Failed to start $videoDecoderType video decoder (${e.message})", e)
@@ -156,9 +153,6 @@ internal class VideoDecoder(
             }
 
             val bufferInfo = MediaCodec.BufferInfo()
-
-            var lastOutputOrFormatChangeMs = System.currentTimeMillis()
-            var tryAgainStreak = 0
 
             try {
                 // Map for calculating decoder rendering latency.
@@ -186,7 +180,6 @@ internal class VideoDecoder(
                                 Log.d(TAG, "Empty video frame")
                                 // Release input buffer
                                 decoder.queueInputBuffer(inIndex, 0, 0, 0L, 0)
-                                continue
                             } else {
                                 // Add timestamp for keyframe to calculating latency further.
                                 if ((Rtsp.DEBUG || decoderLatencyRequested) && frame.isKeyframe) {
@@ -204,7 +197,6 @@ internal class VideoDecoder(
                                     -1
 
                                 byteBuffer?.put(frame.data, frame.offset, frame.length)
-                                Log.d(TAG, "Queueing input buffer: frame length=${frame.length}, isKeyframe=${frame.isKeyframe}, timestamp=${frame.timestamp}")
                                 // --- BEGIN NAL TYPE EXTRACTION ---
                                 var nalType = -1
                                 val nalStart = listOf(0, 1, 2, 3, 4).firstOrNull { i ->
@@ -221,35 +213,35 @@ internal class VideoDecoder(
                                 // (original code: val nalType = frame.data[frame.offset + 4].toInt() and 0x1F)
                                 // --- END NAL TYPE EXTRACTION ---
                                 // --- BEGIN FULL NAL TYPES SCAN ---
-//                                fun findNalTypes(data: ByteArray): List<Int> {
-//                                    val types = mutableListOf<Int>()
-//                                    var i = 0
-//                                    while (i <= data.size - 4) {
-//                                        if (data[i] == 0.toByte() && data[i + 1] == 0.toByte() && data[i + 2] == 0.toByte() && data[i + 3] == 1.toByte()) {
-//                                            if (i + 4 < data.size) {
-//                                                val nalHeader = data[i + 4]
-//                                                types.add(nalHeader.toInt() and 0x1F)
-//                                            }
-//                                            i += 4
-//                                        } else {
-//                                            i++
-//                                        }
-//                                    }
-//                                    return types
-//                                }
-//                                val allTypes = findNalTypes(frame.data)
-//                                Log.d(TAG, "Full NAL types in frame: ${allTypes.joinToString()}")
-//                                // --- END FULL NAL TYPES SCAN ---
-//                                // --- BEGIN IDR NAL EXTRACTION ---
-//                                val idrNalStartIndex = frame.data.indexOfSlice(byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x65.toByte()))
-//                                if (idrNalStartIndex >= 0) {
-//                                    Log.w(TAG, "Extracting IDR-only NAL from full frame")
-//                                    val idrData = frame.data.copyOfRange(idrNalStartIndex, frame.offset + frame.length)
-//                                    byteBuffer?.clear()
-//                                    byteBuffer?.put(idrData)
-//                                    decoder.queueInputBuffer(inIndex, 0, idrData.size, frame.timestamp, 0)
-//                                    continue
-//                                }
+                                fun findNalTypes(data: ByteArray): List<Int> {
+                                    val types = mutableListOf<Int>()
+                                    var i = 0
+                                    while (i <= data.size - 4) {
+                                        if (data[i] == 0.toByte() && data[i + 1] == 0.toByte() && data[i + 2] == 0.toByte() && data[i + 3] == 1.toByte()) {
+                                            if (i + 4 < data.size) {
+                                                val nalHeader = data[i + 4]
+                                                types.add(nalHeader.toInt() and 0x1F)
+                                            }
+                                            i += 4
+                                        } else {
+                                            i++
+                                        }
+                                    }
+                                    return types
+                                }
+                                val allTypes = findNalTypes(frame.data)
+                                Log.d(TAG, "Full NAL types in frame: ${allTypes.joinToString()}")
+                                // --- END FULL NAL TYPES SCAN ---
+                                // --- BEGIN IDR NAL EXTRACTION ---
+                                val idrNalStartIndex = frame.data.indexOfSlice(byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x65.toByte()))
+                                if (idrNalStartIndex >= 0) {
+                                    Log.w(TAG, "Extracting IDR-only NAL from full frame")
+                                    val idrData = frame.data.copyOfRange(idrNalStartIndex, frame.offset + frame.length)
+                                    byteBuffer?.clear()
+                                    byteBuffer?.put(idrData)
+                                    decoder.queueInputBuffer(inIndex, 0, idrData.size, frame.timestamp, 0)
+                                    continue
+                                }
                                 // --- END IDR NAL EXTRACTION ---
                                 Log.i(TAG, "Trying to queue NAL type=$nalType, size=${frame.length}")
                                 // --- BEGIN NAL HEADER DEBUG LOGGING ---
@@ -258,12 +250,12 @@ internal class VideoDecoder(
                                 Log.d(TAG, "Timestamp: ${frame.timestamp}")
                                 // --- END NAL HEADER DEBUG LOGGING ---
                                 // --- BEGIN NAL SAFEGUARD ---
-//                                if (nalType !in 1..5 && nalType != 7 && nalType != 8) {
-//                                    Log.w(TAG, "Skipping unknown or unsupported NAL type=$nalType")
-//                                    decoder.queueInputBuffer(inIndex, 0, 0, 0L, 0)
-//                                    continue
-//                                }
-                                if (frame.length > 1_000_000) {
+                                if (nalType !in 1..5 && nalType != 7 && nalType != 8) {
+                                    Log.w(TAG, "Skipping unknown or unsupported NAL type=$nalType")
+                                    decoder.queueInputBuffer(inIndex, 0, 0, 0L, 0)
+                                    continue
+                                }
+                                if (frame.length > 200_000) {
                                     Log.w(TAG, "Skipping overly large NAL of size=${frame.length}")
                                     decoder.queueInputBuffer(inIndex, 0, 0, 0L, 0)
                                     continue
@@ -274,7 +266,7 @@ internal class VideoDecoder(
                                     Log.i(TAG, "\tFrame queued (${l - frameQueuedMsec}) ${if (frame.isKeyframe) "key frame" else ""}")
                                     frameQueuedMsec = l
                                 }
-                                decoder.queueInputBuffer(inIndex, 0, frame.length, frame.timestamp, 0)
+                                decoder.queueInputBuffer(inIndex, frame.offset, frame.length, frame.timestamp, 0)
                             }
                         }
 
@@ -289,34 +281,16 @@ internal class VideoDecoder(
                             // For the first time wait for a frame within 100 msec, next times no timeout
                             val timeout = if (frameAlreadyDequeued || !firstFrameDecoded) 0L else DEQUEUE_OUTPUT_BUFFER_TIMEOUT_US
                             val outIndex = decoder.dequeueOutputBuffer(bufferInfo, timeout)
-//                            val outIndex = decoder.dequeueOutputBuffer(bufferInfo, -1)
                             when (outIndex) {
                                 // Resolution changed
                                 MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED, MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                                     Log.d(TAG, "Decoder format changed: ${decoder.outputFormat}")
                                     frameAlreadyDequeued = true
-                                    tryAgainStreak = 0
-                                    lastOutputOrFormatChangeMs = System.currentTimeMillis()
                                 }
                                 // No any frames in queue
                                 MediaCodec.INFO_TRY_AGAIN_LATER -> {
-//                                    if (Rtsp.DEBUG) Log.d(TAG, "No output from decoder available")
+                                    if (Rtsp.DEBUG) Log.d(TAG, "No output from decoder available")
                                     frameAlreadyDequeued = true
-                                    tryAgainStreak++
-                                    val now = System.currentTimeMillis()
-                                    if ((now - lastOutputOrFormatChangeMs) > WATCHDOG_NO_OUTPUT_MS ||
-                                        tryAgainStreak > TRY_AGAIN_STREAK_LIMIT) {
-                                        Log.w(TAG, "HW decoder appears stalled (no output ${now - lastOutputOrFormatChangeMs}ms, tryAgainStreak=$tryAgainStreak). Falling back to SW.")
-                                        // Fallback: stop current decoder and switch to software
-                                        stopAndReleaseVideoDecoder(decoder)
-                                        videoDecoderType = DecoderType.SOFTWARE
-                                        decoder = createVideoDecoderAndStart(DecoderType.SOFTWARE)
-                                        // Reset watchdog state after restart
-                                        tryAgainStreak = 0
-                                        lastOutputOrFormatChangeMs = System.currentTimeMillis()
-                                        // Skip to next loop iteration to re-enter dequeue with the new decoder
-                                        continue
-                                    }
                                 }
                                 // Frame decoded
                                 else -> {
@@ -336,8 +310,6 @@ internal class VideoDecoder(
                                             firstFrameDecoded = true
                                         }
                                         frameAlreadyDequeued = false
-                                        tryAgainStreak = 0
-                                        lastOutputOrFormatChangeMs = System.currentTimeMillis()
                                     } else {
                                         Log.e(TAG, "Obtaining frame failed w/ error code $outIndex")
                                     }
@@ -499,23 +471,16 @@ internal class VideoDecoder(
         val format = MediaFormat.createVideoFormat(mimeType, safeWidthHeight.first, safeWidthHeight.second)
         Log.i(TAG, "Configuring surface ${safeWidthHeight.first}x${safeWidthHeight.second} w/ '$mimeType'")
         format.setInteger(MediaFormat.KEY_ROTATION, rotation)
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             // format.setFeatureEnabled(android.media.MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency, true)
             // Request low-latency for the decoder. Not all of the decoders support that.
             format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
         }
-
-        // Prevent throttling on high-FPS or bursty streams
-        format.setInteger(MediaFormat.KEY_OPERATING_RATE, 240_000)
-        if (!format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
-            // Protect against large IDR frames
-            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 1_048_576)
-        }
-
         if (sps != null && pps != null) {
             format.setByteBuffer("csd-0", ByteBuffer.wrap(sps))
             format.setByteBuffer("csd-1", ByteBuffer.wrap(pps))
+//            Log.d(TAG, "SPS: ${sps.joinToString(" ") { "%02X".format(it) }}")
+//            Log.d(TAG, "PPS: ${pps.joinToString(" ") { "%02X".format(it) }}")
         }
         return format
     }
@@ -556,23 +521,7 @@ internal class VideoDecoder(
 
         decoder.setOnFrameRenderedListener(frameRenderedListener, null)
 
-//        if (frameRenderedListener != null) {
-//            decoder.setOnFrameRenderedListener(frameRenderedListener, null)
-//        } else {
-//            decoder.setOnFrameRenderedListener({ _, ptsUs, nano ->
-//                Log.i(TAG, "OnFrameRendered ptsUs=$ptsUs at=$nano (decoder=${decoder.name})")
-//            }, null)
-//        }
-
         val format = getDecoderMediaFormat(decoder)
-
-//        if (surface == null) {
-//            surface = surfaceView?.holder?.surface
-//        }
-//        if (surface == null) {
-//            Log.w(TAG, "No Surface available; HW decoders cannot render without a Surface")
-//        }
-
         decoder.configure(format, surface, null, 0)
         decoder.start()
 
@@ -648,7 +597,6 @@ internal class VideoDecoder(
                     MediaCodecInfo.CodecCapabilities.COLOR_TI_FormatYUV420PackedSemiPlanar -> {
                         yuvFormat = YuvFormat.YV21
                     }
-                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible,
                     MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,
                     MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedSemiPlanar -> {
                         yuvFormat = YuvFormat.NV12
