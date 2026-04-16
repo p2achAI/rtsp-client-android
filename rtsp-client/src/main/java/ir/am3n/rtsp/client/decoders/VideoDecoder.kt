@@ -170,7 +170,9 @@ internal class VideoDecoder(
                 // Main loop
                 while (!exitFlag.get()) {
                     try {
-                        Log.d(TAG, "Decoder codec capabilities: ${decoder.codecInfo.getCapabilitiesForType(mimeType).capabilitiesToString()}")
+                        if (Rtsp.DEBUG) {
+                            Log.d(TAG, "Decoder codec capabilities: ${decoder.codecInfo.getCapabilitiesForType(mimeType).capabilitiesToString()}")
+                        }
                         val inIndex: Int = decoder.dequeueInputBuffer(DEQUEUE_INPUT_TIMEOUT_US)
                         if (inIndex >= 0) {
                             // fill inputBuffers[inputBufferIndex] with valid data
@@ -235,7 +237,9 @@ internal class VideoDecoder(
                                     return types
                                 }
                                 val allTypes = findNalTypes(frame.data)
-                                Log.d(TAG, "Full NAL types in frame: ${allTypes.joinToString()}")
+                                if (Rtsp.DEBUG) {
+                                    Log.d(TAG, "Full NAL types in frame: ${allTypes.joinToString()}")
+                                }
                                 // --- END FULL NAL TYPES SCAN ---
                                 // --- BEGIN IDR NAL EXTRACTION ---
                                 val idrNalStartIndex = frame.data.indexOfSlice(byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x65.toByte()))
@@ -248,12 +252,14 @@ internal class VideoDecoder(
                                     continue
                                 }
                                 // --- END IDR NAL EXTRACTION ---
-                                Log.i(TAG, "Trying to queue NAL type=$nalType, size=${frame.length}")
-                                // --- BEGIN NAL HEADER DEBUG LOGGING ---
-                                val headerPreview = frame.data.sliceArray(frame.offset until (frame.offset + 16).coerceAtMost(frame.data.size))
-                                Log.d(TAG, "NAL Preview [type=$nalType, size=${frame.length}]: ${headerPreview.joinToString(" ") { "%02X".format(it) }}")
-                                Log.d(TAG, "Timestamp: ${frame.timestamp}")
-                                // --- END NAL HEADER DEBUG LOGGING ---
+                                if (Rtsp.DEBUG) {
+                                    Log.i(TAG, "Trying to queue NAL type=$nalType, size=${frame.length}")
+                                    // --- BEGIN NAL HEADER DEBUG LOGGING ---
+                                    val headerPreview = frame.data.sliceArray(frame.offset until (frame.offset + 16).coerceAtMost(frame.data.size))
+                                    Log.d(TAG, "NAL Preview [type=$nalType, size=${frame.length}]: ${headerPreview.joinToString(" ") { "%02X".format(it) }}")
+                                    Log.d(TAG, "Timestamp: ${frame.timestamp}")
+                                    // --- END NAL HEADER DEBUG LOGGING ---
+                                }
                                 // --- BEGIN NAL SAFEGUARD ---
                                 if (nalType !in 1..5 && nalType != 7 && nalType != 8) {
                                     Log.w(TAG, "Skipping unknown or unsupported NAL type=$nalType")
@@ -324,11 +330,12 @@ internal class VideoDecoder(
                                             }
                                         }
 
-                                        val render = bufferInfo.size != 0 && !exitFlag.get()
+                                        val hasRenderableSurface = surface != null || surfaceView?.holder?.surface?.isValid == true
+                                        val render = hasRenderableSurface && bufferInfo.size != 0 && !exitFlag.get()
                                         if (Rtsp.DEBUG) Log.i(TAG, "\tFrame decoded [outIndex=$outIndex, render=$render]")
                                         decodeYuv(decoder, bufferInfo, outIndex)
                                         decoder.releaseOutputBuffer(outIndex, render)
-                                        if (!firstFrameDecoded && render) {
+                                        if (!firstFrameDecoded && bufferInfo.size != 0) {
                                             firstFrameDecoded = true
                                         }
                                         frameAlreadyDequeued = false
@@ -686,4 +693,3 @@ internal class VideoDecoder(
     }
 
 }
-
