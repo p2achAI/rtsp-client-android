@@ -39,7 +39,7 @@ class Rtsp {
         private const val TAG: String = "Rtsp"
         private const val DEFAULT_RTSP_PORT = 554
 
-        var DEBUG = true
+        var DEBUG = false
 
         suspend fun isOnline(url: String, username: String? = null, password: String? = null, userAgent: String? = null): Boolean {
             return suspendCoroutine {
