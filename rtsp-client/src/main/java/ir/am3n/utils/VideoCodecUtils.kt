@@ -312,6 +312,67 @@ object VideoCodecUtils {
         return false
     }
 
+    fun getH265NalUnitType(data: ByteArray?, offset: Int, length: Int): Byte {
+        if (data == null || length <= 0 || offset < 0 || offset + length > data.size) {
+            return (-1).toByte()
+        }
+        val prefixSize = annexBPrefixSize(data, offset, offset + length)
+        if (prefixSize < 0 || offset + prefixSize >= data.size) return (-1).toByte()
+        return ((data[offset + prefixSize].toInt() ushr 1) and 0x3F).toByte()
+    }
+
+    fun getH265NalUnits(
+        data: ByteArray,
+        offset: Int,
+        length: Int,
+        foundNals: ArrayList<NalUnit>
+    ): Int {
+        foundNals.clear()
+        if (offset < 0 || length <= 0 || offset + length > data.size) return 0
+
+        val end = offset + length
+        var start = findAnnexBStart(data, offset, end)
+        while (start != null) {
+            val nalHeaderOffset = start.first + start.second
+            if (nalHeaderOffset >= end) break
+            val next = findAnnexBStart(data, nalHeaderOffset + 1, end)
+            val nalEnd = next?.first ?: end
+            val type = ((data[nalHeaderOffset].toInt() ushr 1) and 0x3F).toByte()
+            foundNals.add(NalUnit(type, start.first, nalEnd - start.first))
+            start = next
+        }
+        return foundNals.size
+    }
+
+    fun isAnyH265KeyFrame(data: ByteArray?, offset: Int, length: Int): Boolean {
+        if (data == null) return false
+        val nalUnits = ArrayList<NalUnit>()
+        getH265NalUnits(data, offset, length, nalUnits)
+        return nalUnits.any { it.type.toInt() in 16..23 }
+    }
+
+    private fun findAnnexBStart(data: ByteArray, from: Int, end: Int): Pair<Int, Int>? {
+        var index = from
+        while (index + 3 <= end) {
+            val prefixSize = annexBPrefixSize(data, index, end)
+            if (prefixSize > 0) return Pair(index, prefixSize)
+            index++
+        }
+        return null
+    }
+
+    private fun annexBPrefixSize(data: ByteArray, offset: Int, end: Int): Int {
+        if (offset + 4 <= end &&
+            data[offset] == 0.toByte() && data[offset + 1] == 0.toByte() &&
+            data[offset + 2] == 0.toByte() && data[offset + 3] == 1.toByte()
+        ) return 4
+        if (offset + 3 <= end &&
+            data[offset] == 0.toByte() && data[offset + 1] == 0.toByte() &&
+            data[offset + 2] == 1.toByte()
+        ) return 3
+        return -1
+    }
+
     //    @Nullable
     //    public static Size getImageSizeFromH265SpsNalUnit(@NonNull byte[] data, int offset, int length) {
     //        int nalUnitTypeIndex = getNalUnitStartCodePrefixSize(data, offset, length);

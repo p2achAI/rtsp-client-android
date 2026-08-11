@@ -4,7 +4,7 @@ import ir.am3n.rtsp.client.interfaces.Frame
 import ir.am3n.utils.VideoCodecType
 
 data class VideoFrame(
-    /** Only H264 codec supported */
+    /** Codec used by the Annex-B NAL units in [data]. */
     val codecType: VideoCodecType,
     /** Indicates whether it is a keyframe or not */
     val isKeyframe: Boolean,

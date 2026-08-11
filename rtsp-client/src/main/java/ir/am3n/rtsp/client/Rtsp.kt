@@ -157,6 +157,7 @@ class Rtsp {
 
     private var surfaceView: SurfaceView? = null
     private var videoMimeType: String = "video/avc"
+    private var videoCodecType: VideoCodecType = VideoCodecType.H264
     private var audioMimeType: String = ""
     private var audioSampleRate: Int = 0
     private var audioChannelCount: Int = 0
@@ -173,22 +174,34 @@ class Rtsp {
             if (sdpInfo.videoTrack != null) {
                 videoQueue.clear()
                 when (sdpInfo.videoTrack?.videoCodec) {
-                    RtspClientUtils.VIDEO_CODEC_H264 -> videoMimeType = "video/avc"
-                    RtspClientUtils.VIDEO_CODEC_H265 -> videoMimeType = "video/hevc"
+                    RtspClientUtils.VIDEO_CODEC_H264 -> {
+                        videoMimeType = "video/avc"
+                        videoCodecType = VideoCodecType.H264
+                    }
+                    RtspClientUtils.VIDEO_CODEC_H265 -> {
+                        videoMimeType = "video/hevc"
+                        videoCodecType = VideoCodecType.H265
+                    }
                 }
                 when (sdpInfo.audioTrack?.audioCodec) {
                     RtspClientUtils.AUDIO_CODEC_AAC -> audioMimeType = "audio/mp4a-latm"
                 }
-                val sps: ByteArray? = sdpInfo.videoTrack?.sps
-                val pps: ByteArray? = sdpInfo.videoTrack?.pps
+                val parameterSets = listOfNotNull(
+                    sdpInfo.videoTrack?.vps,
+                    sdpInfo.videoTrack?.sps,
+                    sdpInfo.videoTrack?.pps
+                )
                 // Initialize decoder
-                if (sps != null && pps != null) {
-                    val data = ByteArray(sps.size + pps.size)
-                    sps.copyInto(data, 0, 0, sps.size)
-                    pps.copyInto(data, sps.size, 0, pps.size)
+                if (sdpInfo.videoTrack?.sps != null && sdpInfo.videoTrack?.pps != null) {
+                    val data = ByteArray(parameterSets.sumOf { it.size })
+                    var parameterSetOffset = 0
+                    parameterSets.forEach {
+                        it.copyInto(data, parameterSetOffset)
+                        parameterSetOffset += it.size
+                    }
                     videoQueue.push(
                         VideoFrame(
-                            VideoCodecType.H264,
+                            videoCodecType,
                             isKeyframe = true,
                             data,
                             offset = 0,
@@ -216,10 +229,15 @@ class Rtsp {
         }
 
         override fun onRtspVideoNalUnitReceived(data: ByteArray, offset: Int, length: Int, timestamp: Long) {
-            val isKeyframe = VideoCodecUtils.isAnyH264KeyFrame(data, offset, min(length, 1000))
+            val isKeyframe = when (videoCodecType) {
+                VideoCodecType.H264 -> VideoCodecUtils.isAnyH264KeyFrame(data, offset, min(length, 1000))
+                VideoCodecType.H265 -> VideoCodecUtils.isAnyH265KeyFrame(data, offset, length)
+                VideoCodecType.UNKNOWN -> false
+            }
             if (length > 0) {
-                videoQueue.push(VideoFrame(VideoCodecType.H264, isKeyframe, data, offset, length, timestamp))
-                frameListener?.onVideoNalUnitReceived(VideoFrame(VideoCodecType.H264, isKeyframe, data, offset, length, timestamp))
+                val frame = VideoFrame(videoCodecType, isKeyframe, data, offset, length, timestamp)
+                videoQueue.push(frame)
+                frameListener?.onVideoNalUnitReceived(frame)
             } else {
                 frameListener?.onVideoNalUnitReceived(null)
                 if (DEBUG) Log.e(TAG, "onRtspVideoNalUnitReceived() zero length")
@@ -377,7 +395,8 @@ class Rtsp {
             videoDecoder = VideoDecoder(
                 surface = null, surfaceView, requestMediaImage, requestYuv, requestBitmap,
                 videoMimeType, sdpInfo.videoTrack!!.frameWidth, sdpInfo.videoTrack!!.frameHeight, rotation = 0,
-                videoQueue, clientListener = clientListener, sps = sdpInfo.videoTrack!!.sps, pps = sdpInfo.videoTrack!!.pps
+                videoQueue, clientListener = clientListener, vps = sdpInfo.videoTrack!!.vps,
+                sps = sdpInfo.videoTrack!!.sps, pps = sdpInfo.videoTrack!!.pps
             )
             videoDecoder!!.start()
         }

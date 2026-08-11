@@ -17,6 +17,7 @@ import ir.am3n.rtsp.client.parser.RtpParser
 import ir.am3n.rtsp.client.parser.VideoRtpParser
 import ir.am3n.utils.NetUtils
 import ir.am3n.utils.VideoCodecUtils
+import ir.am3n.utils.VideoCodecType
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -60,6 +61,14 @@ internal object RtspClientUtils {
             AUDIO_CODEC_AAC -> "AAC"
             AUDIO_CODEC_OPUS -> "Opus"
             else -> "Unknown"
+        }
+    }
+
+    internal fun getVideoCodecFromSdpName(name: String): Int? {
+        return when (name.lowercase(Locale.ROOT)) {
+            "h264" -> VIDEO_CODEC_H264
+            "h265", "hevc", "hev", "hvc1", "hev1" -> VIDEO_CODEC_H265
+            else -> null
         }
     }
 
@@ -111,15 +120,16 @@ internal object RtspClientUtils {
         val videoParser: VideoRtpParser? =
             if (sdpInfo.videoTrack != null) {
                 when (sdpInfo.videoTrack!!.videoCodec) {
-                    VIDEO_CODEC_H264 -> VideoRtpParser()
-                    VIDEO_CODEC_H265 -> VideoRtpParser()
+                    VIDEO_CODEC_H264 -> VideoRtpParser(VideoCodecType.H264)
+                    VIDEO_CODEC_H265 -> VideoRtpParser(VideoCodecType.H265)
                     else -> null
                 }
             } else null
         val audioParser = if (sdpInfo.audioTrack?.audioCodec == AUDIO_CODEC_AAC) AacParser(sdpInfo.audioTrack!!.mode!!) else null
 
-        var nalUnitSps = if (sdpInfo.videoTrack != null) sdpInfo.videoTrack!!.sps else null
-        var nalUnitPps = if (sdpInfo.videoTrack != null) sdpInfo.videoTrack!!.pps else null
+        var nalUnitVps = sdpInfo.videoTrack?.vps
+        var nalUnitSps = sdpInfo.videoTrack?.sps
+        var nalUnitPps = sdpInfo.videoTrack?.pps
         var nalUnitSei: ByteArray = EMPTY_ARRAY
         var videoSeqNum = 0
 
@@ -153,6 +163,38 @@ internal object RtspClientUtils {
                 videoSeqNum = header.sequenceNumber
                 val nalUnit = videoParser?.processRtpPacketAndGetNalUnit(data, header.payloadSize)
                 if (nalUnit != null) {
+                    if (sdpInfo.videoTrack?.videoCodec == VIDEO_CODEC_H265) {
+                        val nalUnits = ArrayList<VideoCodecUtils.NalUnit>()
+                        VideoCodecUtils.getH265NalUnits(nalUnit, 0, nalUnit.size, nalUnits)
+                        for (unit in nalUnits) {
+                            val bytes = nalUnit.copyOfRange(unit.offset, unit.offset + unit.length)
+                            when (unit.type) {
+                                VideoCodecUtils.H265_NAL_VPS -> nalUnitVps = bytes
+                                VideoCodecUtils.H265_NAL_SPS -> nalUnitSps = bytes
+                                VideoCodecUtils.H265_NAL_PPS -> nalUnitPps = bytes
+                            }
+                        }
+
+                        val isKeyframe = nalUnits.any { it.type.toInt() in 16..23 }
+                        val output = if (isKeyframe) {
+                            val types = nalUnits.map { it.type }.toSet()
+                            concatNalUnits(
+                                listOfNotNull(
+                                    nalUnitVps?.takeIf { VideoCodecUtils.H265_NAL_VPS !in types },
+                                    nalUnitSps?.takeIf { VideoCodecUtils.H265_NAL_SPS !in types },
+                                    nalUnitPps?.takeIf { VideoCodecUtils.H265_NAL_PPS !in types },
+                                    nalUnit
+                                )
+                            )
+                        } else {
+                            nalUnit
+                        }
+                        listener.onRtspVideoNalUnitReceived(
+                            output, 0, output.size, (header.timeStamp * 11.111111).toLong()
+                        )
+                        continue
+                    }
+
                     val type: Byte = VideoCodecUtils.getH264NalUnitType(nalUnit, 0, nalUnit.size)
                     when (type) {
                         VideoCodecUtils.NAL_SPS -> {
@@ -223,6 +265,16 @@ internal object RtspClientUtils {
                 if (Rtsp.DEBUG) Log.w(TAG, "Invalid RTP payload type " + header.payloadType)
             }
         }
+    }
+
+    private fun concatNalUnits(nalUnits: List<ByteArray>): ByteArray {
+        val output = ByteArray(nalUnits.sumOf { it.size })
+        var offset = 0
+        for (nalUnit in nalUnits) {
+            nalUnit.copyInto(output, offset)
+            offset += nalUnit.size
+        }
+        return output
     }
 
     @Throws(IOException::class)
@@ -409,10 +461,11 @@ internal object RtspClientUtils {
                                 if (values.size > 1) {
                                     values = TextUtils.split(values[1], "/")
                                     if (values.isNotEmpty()) {
-                                        when (values[0].lowercase(Locale.getDefault())) {
-                                            "h264" -> (tracks[0] as VideoTrack).videoCodec = VIDEO_CODEC_H264
-                                            "h265" -> (tracks[0] as VideoTrack).videoCodec = VIDEO_CODEC_H265
-                                            else -> Log.w(TAG, "Unknown video codec \"" + values[0] + "\"")
+                                        val videoCodec = getVideoCodecFromSdpName(values[0])
+                                        if (videoCodec != null) {
+                                            (tracks[0] as VideoTrack).videoCodec = videoCodec
+                                        } else {
+                                            Log.w(TAG, "Unknown video codec \"" + values[0] + "\"")
                                         }
                                         if (Rtsp.DEBUG) Log.i(TAG, "Video: " + values[0])
                                     }
@@ -485,8 +538,10 @@ internal object RtspClientUtils {
     }
 
     private fun getSdpAParams(param: Pair<String, String>): List<Pair<String, String>>? {
-        if (param.first == "a" && param.second.startsWith("fmtp:") && param.second.length > 8) { //
-            val value = param.second.substring(8).trim { it <= ' ' } // fmtp can be '96' (2 chars) and '127' (3 chars)
+        if (param.first == "a" && param.second.startsWith("fmtp:")) {
+            val parametersStart = param.second.indexOf(' ')
+            if (parametersStart < 0 || parametersStart == param.second.lastIndex) return null
+            val value = param.second.substring(parametersStart + 1).trim { it <= ' ' }
             val paramsA = TextUtils.split(value, ";")
             val retParams = ArrayList<Pair<String, String>>()
             for (p in paramsA) {
@@ -511,25 +566,13 @@ internal object RtspClientUtils {
                     "sprop-parameter-sets" -> {
                         val paramsSpsPps = TextUtils.split(pair.second, ",")
                         if (paramsSpsPps.size > 1) {
-                            val sps = Base64.decode(paramsSpsPps[0], Base64.NO_WRAP)
-                            val pps = Base64.decode(paramsSpsPps[1], Base64.NO_WRAP)
-                            val nalSps = ByteArray(sps.size + 4)
-                            val nalPps = ByteArray(pps.size + 4)
-                            // Add 00 00 00 01 NAL unit header
-                            nalSps[0] = 0
-                            nalSps[1] = 0
-                            nalSps[2] = 0
-                            nalSps[3] = 1
-                            System.arraycopy(sps, 0, nalSps, 4, sps.size)
-                            nalPps[0] = 0
-                            nalPps[1] = 0
-                            nalPps[2] = 0
-                            nalPps[3] = 1
-                            System.arraycopy(pps, 0, nalPps, 4, pps.size)
-                            videoTrack.sps = nalSps
-                            videoTrack.pps = nalPps
+                            videoTrack.sps = decodeSpropNalUnit(paramsSpsPps[0])
+                            videoTrack.pps = decodeSpropNalUnit(paramsSpsPps[1])
                         }
                     }
+                    "sprop-vps" -> videoTrack.vps = decodeSpropNalUnit(pair.second)
+                    "sprop-sps" -> videoTrack.sps = decodeSpropNalUnit(pair.second)
+                    "sprop-pps" -> videoTrack.pps = decodeSpropNalUnit(pair.second)
                     "packetization-mode" -> {
                         // 0 - single NAL unit (default)
                         // 1 - non-interleaved mode (STAP-A and FU-A NAL units)
@@ -542,6 +585,14 @@ internal object RtspClientUtils {
                     }
                 }
             }
+        }
+    }
+
+    private fun decodeSpropNalUnit(value: String): ByteArray {
+        val payload = Base64.decode(value, Base64.NO_WRAP)
+        return ByteArray(payload.size + 4).also {
+            it[3] = 1
+            payload.copyInto(it, 4)
         }
     }
 

@@ -63,6 +63,10 @@ open class RtspSurfaceView : SurfaceView {
     private var statusListener: RtspStatusListener? = null
     private val uiHandler = Handler(Looper.getMainLooper())
     private var videoMimeType: String = "video/avc"
+    private var videoCodecType: VideoCodecType = VideoCodecType.H264
+    private var videoVps: ByteArray? = null
+    private var videoSps: ByteArray? = null
+    private var videoPps: ByteArray? = null
     private var audioMimeType: String = ""
     private var audioSampleRate: Int = 0
     private var audioChannelCount: Int = 0
@@ -117,8 +121,14 @@ open class RtspSurfaceView : SurfaceView {
             if (sdpInfo.videoTrack != null) {
                 videoFrameQueue.clear()
                 when (sdpInfo.videoTrack?.videoCodec) {
-                    VIDEO_CODEC_H264 -> videoMimeType = MediaFormat.MIMETYPE_VIDEO_AVC
-                    VIDEO_CODEC_H265 -> videoMimeType = MediaFormat.MIMETYPE_VIDEO_HEVC
+                    VIDEO_CODEC_H264 -> {
+                        videoMimeType = MediaFormat.MIMETYPE_VIDEO_AVC
+                        videoCodecType = VideoCodecType.H264
+                    }
+                    VIDEO_CODEC_H265 -> {
+                        videoMimeType = MediaFormat.MIMETYPE_VIDEO_HEVC
+                        videoCodecType = VideoCodecType.H265
+                    }
                 }
                 when (sdpInfo.audioTrack?.audioCodec) {
                     AUDIO_CODEC_AAC -> audioMimeType = MediaFormat.MIMETYPE_AUDIO_AAC
@@ -126,15 +136,22 @@ open class RtspSurfaceView : SurfaceView {
                 }
                 val sps: ByteArray? = sdpInfo.videoTrack?.sps
                 val pps: ByteArray? = sdpInfo.videoTrack?.pps
+                videoVps = sdpInfo.videoTrack?.vps
+                videoSps = sps
+                videoPps = pps
+                val parameterSets = listOfNotNull(sdpInfo.videoTrack?.vps, sps, pps)
                 // Initialize decoder
                 @SuppressLint("UnsafeOptInUsageError")
                 if (sps != null && pps != null) {
-                    val data = ByteArray(sps.size + pps.size)
-                    sps.copyInto(data, 0, 0, sps.size)
-                    pps.copyInto(data, sps.size, 0, pps.size)
+                    val data = ByteArray(parameterSets.sumOf { it.size })
+                    var parameterSetOffset = 0
+                    parameterSets.forEach {
+                        it.copyInto(data, parameterSetOffset)
+                        parameterSetOffset += it.size
+                    }
                     videoFrameQueue.push(
                         VideoFrame(
-                            VideoCodecType.H264,
+                            videoCodecType,
                             isKeyframe = true,
                             data,
                             0,
@@ -143,21 +160,23 @@ open class RtspSurfaceView : SurfaceView {
                         )
                     )
                     try {
-                        val offset = if (sps[3] == 1.toByte()) 5 else 4
-                        val spsData = NalUnitUtil.parseSpsNalUnitPayload(
-                            data, offset, data.size - offset
-                        )
-                        if (spsData.maxNumReorderFrames > 0) {
-                            Log.w(
-                                TAG, "SPS frame param max_num_reorder_frames=" +
-                                        "${spsData.maxNumReorderFrames} is too high" +
-                                        " for low latency decoding (expecting 0)."
+                        if (videoCodecType == VideoCodecType.H264) {
+                            val offset = if (sps[3] == 1.toByte()) 5 else 4
+                            val spsData = NalUnitUtil.parseSpsNalUnitPayload(
+                                data, offset, data.size - offset
                             )
-                        }
-                        if (Rtsp.DEBUG) {
-                            Log.d(TAG, "SPS frame: " + sps.toHexString(0, sps.size))
-                            Log.d(TAG, "\t${spsData.spsDataToString()}")
-                            Log.d(TAG, "PPS frame: " + pps.toHexString(0, pps.size))
+                            if (spsData.maxNumReorderFrames > 0) {
+                                Log.w(
+                                    TAG, "SPS frame param max_num_reorder_frames=" +
+                                            "${spsData.maxNumReorderFrames} is too high" +
+                                            " for low latency decoding (expecting 0)."
+                                )
+                            }
+                            if (Rtsp.DEBUG) {
+                                Log.d(TAG, "SPS frame: " + sps.toHexString(0, sps.size))
+                                Log.d(TAG, "\t${spsData.spsDataToString()}")
+                                Log.d(TAG, "PPS frame: " + pps.toHexString(0, pps.size))
+                            }
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
@@ -186,8 +205,12 @@ open class RtspSurfaceView : SurfaceView {
             if (Rtsp.DEBUG) Log.v(TAG, "onRtspVideoNalUnitReceived(length=$length)")
 
             // Search for NAL_IDR_SLICE within first 1KB maximum
-            val isKeyframe = VideoCodecUtils.isAnyH264KeyFrame(data, offset, min(length, 1000))
-            if (debug) {
+            val isKeyframe = when (videoCodecType) {
+                VideoCodecType.H264 -> VideoCodecUtils.isAnyH264KeyFrame(data, offset, min(length, 1000))
+                VideoCodecType.H265 -> VideoCodecUtils.isAnyH265KeyFrame(data, offset, length)
+                VideoCodecType.UNKNOWN -> false
+            }
+            if (debug && videoCodecType == VideoCodecType.H264) {
                 val nalList = ArrayList<VideoCodecUtils.NalUnit>()
                 VideoCodecUtils.getH264NalUnits(data, offset, length, nalList)
                 var b = StringBuilder()
@@ -213,7 +236,7 @@ open class RtspSurfaceView : SurfaceView {
             }
             videoFrameQueue.push(
                 VideoFrame(
-                    VideoCodecType.H264,
+                    videoCodecType,
                     isKeyframe,
                     data,
                     offset,
@@ -406,7 +429,10 @@ open class RtspSurfaceView : SurfaceView {
                             statusListener?.onFirstFrameRendered()
                         }
                     }
-                }
+                },
+                vps = videoVps,
+                sps = videoSps,
+                pps = videoPps
             )
             videoDecodeThread!!.apply {
                 name = "RTSP video thread [${getUriName()}]"

@@ -4,6 +4,7 @@ import ir.am3n.rtsp.client.RtspClientUtils
 
 class VideoTrack : Track() {
     var videoCodec = RtspClientUtils.VIDEO_CODEC_H264
+    var vps: ByteArray? = null
     var sps: ByteArray? = null
     var pps: ByteArray? = null
     var frameWidth: Int = 1920

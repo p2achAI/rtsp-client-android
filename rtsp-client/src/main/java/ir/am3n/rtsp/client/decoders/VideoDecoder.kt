@@ -22,6 +22,7 @@ import ir.am3n.rtsp.client.Rtsp
 import ir.am3n.rtsp.client.data.YuvFrame
 import ir.am3n.utils.DecoderType
 import ir.am3n.utils.MediaCodecUtils
+import ir.am3n.utils.VideoCodecType
 import ir.am3n.utils.capabilitiesToString
 import java.nio.ByteBuffer
 import java.util.concurrent.TimeUnit
@@ -41,6 +42,7 @@ internal class VideoDecoder(
     private var videoDecoderType: DecoderType = DecoderType.SOFTWARE, //DecoderType.HARDWARE, //
     private val clientListener: RtspClientListener? = null,
     private val frameRenderedListener: OnFrameRenderedListener? = null,
+    private val vps: ByteArray? = null,
     private val sps: ByteArray? = null,
     private val pps: ByteArray? = null
 ) : Thread() {
@@ -203,6 +205,15 @@ internal class VideoDecoder(
                                 else
                                     -1
 
+                                if (byteBuffer != null && frame.length > byteBuffer.remaining()) {
+                                    Log.w(
+                                        TAG,
+                                        "Skipping NAL larger than decoder input buffer " +
+                                                "(${frame.length} > ${byteBuffer.remaining()})"
+                                    )
+                                    decoder.queueInputBuffer(inIndex, 0, 0, 0L, 0)
+                                    continue
+                                }
                                 byteBuffer?.put(frame.data, frame.offset, frame.length)
                                 // --- BEGIN NAL TYPE EXTRACTION ---
                                 var nalType = -1
@@ -212,7 +223,12 @@ internal class VideoDecoder(
                                         .contentEquals(byteArrayOf(0x00, 0x00, 0x00, 0x01))
                                 }
                                 if (nalStart != null) {
-                                    nalType = frame.data[frame.offset + nalStart + 4].toInt() and 0x1F
+                                    val nalHeader = frame.data[frame.offset + nalStart + 4].toInt()
+                                    nalType = when (frame.codecType) {
+                                        VideoCodecType.H264 -> nalHeader and 0x1F
+                                        VideoCodecType.H265 -> (nalHeader ushr 1) and 0x3F
+                                        VideoCodecType.UNKNOWN -> -1
+                                    }
                                 } else {
                                     Log.w(TAG, "Failed to detect NAL start code")
                                 }
@@ -227,7 +243,13 @@ internal class VideoDecoder(
                                         if (data[i] == 0.toByte() && data[i + 1] == 0.toByte() && data[i + 2] == 0.toByte() && data[i + 3] == 1.toByte()) {
                                             if (i + 4 < data.size) {
                                                 val nalHeader = data[i + 4]
-                                                types.add(nalHeader.toInt() and 0x1F)
+                                                types.add(
+                                                    when (frame.codecType) {
+                                                        VideoCodecType.H264 -> nalHeader.toInt() and 0x1F
+                                                        VideoCodecType.H265 -> (nalHeader.toInt() ushr 1) and 0x3F
+                                                        VideoCodecType.UNKNOWN -> -1
+                                                    }
+                                                )
                                             }
                                             i += 4
                                         } else {
@@ -242,7 +264,11 @@ internal class VideoDecoder(
                                 }
                                 // --- END FULL NAL TYPES SCAN ---
                                 // --- BEGIN IDR NAL EXTRACTION ---
-                                val idrNalStartIndex = frame.data.indexOfSlice(byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x65.toByte()))
+                                val idrNalStartIndex = if (frame.codecType == VideoCodecType.H264) {
+                                    frame.data.indexOfSlice(byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x65.toByte()))
+                                } else {
+                                    -1
+                                }
                                 if (idrNalStartIndex >= 0) {
                                     Log.w(TAG, "Extracting IDR-only NAL from full frame")
                                     val idrData = frame.data.copyOfRange(idrNalStartIndex, frame.offset + frame.length)
@@ -261,13 +287,13 @@ internal class VideoDecoder(
                                     // --- END NAL HEADER DEBUG LOGGING ---
                                 }
                                 // --- BEGIN NAL SAFEGUARD ---
-                                if (nalType !in 1..5 && nalType != 7 && nalType != 8) {
-                                    Log.w(TAG, "Skipping unknown or unsupported NAL type=$nalType")
-                                    decoder.queueInputBuffer(inIndex, 0, 0, 0L, 0)
-                                    continue
+                                val supportedNalType = when (frame.codecType) {
+                                    VideoCodecType.H264 -> nalType in 1..5 || nalType == 7 || nalType == 8
+                                    VideoCodecType.H265 -> nalType in 0..47
+                                    VideoCodecType.UNKNOWN -> false
                                 }
-                                if (frame.length > 200_000) {
-                                    Log.w(TAG, "Skipping overly large NAL of size=${frame.length}")
+                                if (!supportedNalType) {
+                                    Log.w(TAG, "Skipping unknown or unsupported NAL type=$nalType")
                                     decoder.queueInputBuffer(inIndex, 0, 0, 0L, 0)
                                     continue
                                 }
@@ -508,8 +534,19 @@ internal class VideoDecoder(
             format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
         }
         if (sps != null && pps != null) {
-            format.setByteBuffer("csd-0", ByteBuffer.wrap(sps))
-            format.setByteBuffer("csd-1", ByteBuffer.wrap(pps))
+            if (mimeType == MediaFormat.MIMETYPE_VIDEO_HEVC) {
+                val parameterSets = listOfNotNull(vps, sps, pps)
+                val csd = ByteArray(parameterSets.sumOf { it.size })
+                var offset = 0
+                parameterSets.forEach {
+                    it.copyInto(csd, offset)
+                    offset += it.size
+                }
+                format.setByteBuffer("csd-0", ByteBuffer.wrap(csd))
+            } else {
+                format.setByteBuffer("csd-0", ByteBuffer.wrap(sps))
+                format.setByteBuffer("csd-1", ByteBuffer.wrap(pps))
+            }
 //            Log.d(TAG, "SPS: ${sps.joinToString(" ") { "%02X".format(it) }}")
 //            Log.d(TAG, "PPS: ${pps.joinToString(" ") { "%02X".format(it) }}")
         }
