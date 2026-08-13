@@ -2,7 +2,9 @@ package ir.am3n.rtsp.client.decoders
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
+import android.graphics.ImageFormat
 import android.graphics.Rect
+import android.media.Image
 import android.media.MediaCodec
 import android.media.MediaCodec.OnFrameRenderedListener
 import android.media.MediaCodecInfo
@@ -63,6 +65,8 @@ internal class VideoDecoder(
     private var exitFlag = AtomicBoolean(false)
 
     private var keyColorFormat = 0
+    private val hasLoggedYuvImageLayout = AtomicBoolean(false)
+    private val hasLoggedLegacyYuvFallback = AtomicBoolean(false)
 
     /** Decoder latency used for statistics */
     @Volatile
@@ -322,6 +326,7 @@ internal class VideoDecoder(
                                 // Resolution changed
                                 MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED, MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                                     Log.d(TAG, "Decoder format changed: ${decoder.outputFormat}")
+                                    updateOutputColorFormat(decoder.outputFormat)
                                     frameAlreadyDequeued = true
                                     tryAgainStreak = 0
                                     lastOutputOrFormatChangeMs = System.currentTimeMillis()
@@ -528,6 +533,12 @@ internal class VideoDecoder(
         val format = MediaFormat.createVideoFormat(mimeType, safeWidthHeight.first, safeWidthHeight.second)
         Log.i(TAG, "Configuring surface ${safeWidthHeight.first}x${safeWidthHeight.second} w/ '$mimeType'")
         format.setInteger(MediaFormat.KEY_ROTATION, rotation)
+        if (surface == null && (surfaceView != null || requestMediaImage || requestYuv || requestBitmap)) {
+            format.setInteger(
+                MediaFormat.KEY_COLOR_FORMAT,
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
+            )
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             // format.setFeatureEnabled(android.media.MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency, true)
             // Request low-latency for the decoder. Not all of the decoders support that.
@@ -593,7 +604,7 @@ internal class VideoDecoder(
         decoder.configure(format, surface, null, 0)
         decoder.start()
 
-        this.keyColorFormat = decoder.outputFormat.getInteger(MediaFormat.KEY_COLOR_FORMAT)
+        updateOutputColorFormat(decoder.outputFormat)
         if (Rtsp.DEBUG) Log.i(TAG, "keyColorFormat= $keyColorFormat")
 
         val capabilities = decoder.codecInfo.getCapabilitiesForType(mimeType)
@@ -616,6 +627,12 @@ internal class VideoDecoder(
         return decoder
     }
 
+    private fun updateOutputColorFormat(outputFormat: MediaFormat) {
+        if (outputFormat.containsKey(MediaFormat.KEY_COLOR_FORMAT)) {
+            keyColorFormat = outputFormat.getInteger(MediaFormat.KEY_COLOR_FORMAT)
+        }
+    }
+
     private fun stopAndReleaseVideoDecoder(decoder: MediaCodec) {
         if (Rtsp.DEBUG) Log.v(TAG, "stopAndReleaseVideoDecoder()")
         val type = videoDecoderType.toString().lowercase()
@@ -636,66 +653,67 @@ internal class VideoDecoder(
         queue.clear()
     }
 
+    private data class PackedYuvFrame(
+        val data: ByteArray,
+        val width: Int,
+        val height: Int,
+        val format: YuvFormat
+    )
+
     private fun decodeYuv(decoder: MediaCodec, info: MediaCodec.BufferInfo, index: Int) {
+        var outputImage: Image? = null
+        var imageOwnershipTransferred = false
+
         try {
-
-            if (surfaceView == null && !requestMediaImage && !requestYuv && !requestBitmap)
+            if (surfaceView == null && !requestMediaImage && !requestYuv && !requestBitmap) {
                 return
-
-            surfaceView?.holder?.surface?.isValid?.let {
-                if (!it) {
-                    Log.w(TAG, "Surface is not valid for rendering")
-                }
             }
 
-            var yuvByteArray: ByteArray? = null
-            var yuvFormat: YuvFormat? = null
-            if (requestYuv) {
-                val buffer = decoder.getOutputBuffer(index)
-                buffer!!.position(info.offset)
-                buffer.limit(info.offset + info.size)
-                yuvByteArray = ByteArray(buffer.remaining())
-                buffer.get(yuvByteArray)
-                when (keyColorFormat) {
-                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar,
-                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedPlanar -> {
-                        yuvFormat = YuvFormat.YV12
-                    }
-                    MediaCodecInfo.CodecCapabilities.COLOR_QCOM_FormatYUV420SemiPlanar,
-                    MediaCodecInfo.CodecCapabilities.COLOR_TI_FormatYUV420PackedSemiPlanar -> {
-                        yuvFormat = YuvFormat.YV21
-                    }
-                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,
-                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedSemiPlanar -> {
-                        yuvFormat = YuvFormat.NV12
-                    }
-                    else -> {
-                        throw Exception("Unknown MediaFormat.KEY_COLOR_FORMAT")
-                    }
-                }
+            val shouldDrawBitmap = surfaceView?.holder?.surface?.isValid == true
+            if (surfaceView != null && !shouldDrawBitmap) {
+                Log.w(TAG, "Surface is not valid for rendering")
             }
 
-            val bitmap = if (surfaceView?.holder?.surface?.isValid == true || requestBitmap) {
-                try {
-                    when (keyColorFormat) {
-                        MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar,
-                        MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedPlanar -> {
-                            Toolkit.yuvToRgbBitmap(yuvByteArray!!, width, height, YuvFormat.YV12)
-                        }
-                        MediaCodecInfo.CodecCapabilities.COLOR_QCOM_FormatYUV420SemiPlanar,
-                        MediaCodecInfo.CodecCapabilities.COLOR_TI_FormatYUV420PackedSemiPlanar -> {
-                            Toolkit.yuvToRgbBitmap(yuvByteArray!!, width, height, YuvFormat.YV21)
-                        }
-                        MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,
-                        MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedSemiPlanar -> {
-                            Toolkit.yuvToRgbBitmap(yuvByteArray!!, width, height, YuvFormat.NV12)
-                        }
-                        else -> {
-                            throw Exception("Unknown MediaFormat.KEY_COLOR_FORMAT")
-                        }
-                    }
+            val needsPackedYuv = requestYuv || requestBitmap || shouldDrawBitmap
+            if (needsPackedYuv || requestMediaImage) {
+                outputImage = try {
+                    decoder.getOutputImage(index)
                 } catch (t: Throwable) {
-                    t.printStackTrace()
+                    Log.w(TAG, "Unable to obtain decoder output as Image", t)
+                    null
+                }
+            }
+
+            var packedYuv = if (needsPackedYuv && outputImage != null) {
+                try {
+                    outputImageToNv21(outputImage)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Unable to convert decoder Image planes to NV21", t)
+                    null
+                }
+            } else {
+                null
+            }
+
+            if (needsPackedYuv && packedYuv == null && !requestMediaImage) {
+                outputImage?.close()
+                outputImage = null
+                if (hasLoggedLegacyYuvFallback.compareAndSet(false, true)) {
+                    Log.w(TAG, "Falling back to packed codec output; plane layout is unavailable")
+                }
+                packedYuv = readLegacyPackedYuv(decoder, info, index)
+            }
+
+            val bitmap = if ((shouldDrawBitmap || requestBitmap) && packedYuv != null) {
+                try {
+                    Toolkit.yuvToRgbBitmap(
+                        packedYuv.data,
+                        packedYuv.width,
+                        packedYuv.height,
+                        packedYuv.format
+                    )
+                } catch (t: Throwable) {
+                    Log.e(TAG, "Unable to convert decoded YUV frame to Bitmap", t)
                     null
                 }
             } else {
@@ -716,17 +734,105 @@ internal class VideoDecoder(
             }
 
             if (requestMediaImage || requestYuv || requestBitmap) {
-                clientListener?.onRtspVideoFrameReceived(
-                    width, height,
-                    if (requestMediaImage) decoder.getOutputImage(index)!! else null,
-                    if (requestYuv) YuvFrame(yuvByteArray!!, yuvFormat) else null,
+                val listener = clientListener
+                val crop = outputImage?.cropRect
+                val frameWidth = packedYuv?.width ?: crop?.width() ?: width
+                val frameHeight = packedYuv?.height ?: crop?.height() ?: height
+                listener?.onRtspVideoFrameReceived(
+                    frameWidth,
+                    frameHeight,
+                    if (requestMediaImage) outputImage else null,
+                    if (requestYuv && packedYuv != null) {
+                        YuvFrame(packedYuv.data, packedYuv.format)
+                    } else {
+                        null
+                    },
                     if (requestBitmap) bitmap?.copy(Bitmap.Config.ARGB_8888, true) else null
                 )
+                if (requestMediaImage && outputImage != null && listener != null) {
+                    imageOwnershipTransferred = true
+                }
             }
-
         } catch (t: Throwable) {
-            t.printStackTrace()
+            Log.e(TAG, "Unable to process decoded video frame", t)
+        } finally {
+            if (!imageOwnershipTransferred) {
+                outputImage?.close()
+            }
         }
+    }
+
+    private fun outputImageToNv21(image: Image): PackedYuvFrame {
+        require(image.format == ImageFormat.YUV_420_888) {
+            "Unsupported output image format ${image.format}"
+        }
+
+        val crop = image.cropRect
+        val planes = image.planes.map {
+            Yuv420PlaneConverter.Plane(
+                buffer = it.buffer,
+                rowStride = it.rowStride,
+                pixelStride = it.pixelStride
+            )
+        }
+        if (hasLoggedYuvImageLayout.compareAndSet(false, true)) {
+            Log.i(
+                TAG,
+                "Decoder Image layout crop=$crop, planes=" +
+                        planes.joinToString { "row=${it.rowStride}/pixel=${it.pixelStride}" }
+            )
+        }
+
+        return PackedYuvFrame(
+            data = Yuv420PlaneConverter.toNv21(
+                cropLeft = crop.left,
+                cropTop = crop.top,
+                width = crop.width(),
+                height = crop.height(),
+                planes = planes
+            ),
+            width = crop.width(),
+            height = crop.height(),
+            format = YuvFormat.NV21
+        )
+    }
+
+    private fun readLegacyPackedYuv(
+        decoder: MediaCodec,
+        info: MediaCodec.BufferInfo,
+        index: Int
+    ): PackedYuvFrame? {
+        val source = decoder.getOutputBuffer(index)?.duplicate() ?: return null
+        val start = info.offset
+        val end = info.offset + info.size
+        if (start < 0 || end < start || end > source.limit()) {
+            Log.w(
+                TAG,
+                "Invalid codec output range offset=${info.offset}, size=${info.size}, limit=${source.limit()}"
+            )
+            return null
+        }
+        source.position(start)
+        source.limit(end)
+        val data = ByteArray(source.remaining())
+        source.get(data)
+
+        val format = when (keyColorFormat) {
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar,
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedPlanar -> YuvFormat.YV12
+
+            MediaCodecInfo.CodecCapabilities.COLOR_QCOM_FormatYUV420SemiPlanar,
+            MediaCodecInfo.CodecCapabilities.COLOR_TI_FormatYUV420PackedSemiPlanar -> YuvFormat.YV21
+
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedSemiPlanar -> YuvFormat.NV12
+
+            else -> {
+                Log.w(TAG, "Unknown packed YUV color format $keyColorFormat")
+                return null
+            }
+        }
+        return PackedYuvFrame(data, width, height, format)
     }
 
 }
