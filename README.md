@@ -12,7 +12,7 @@ Unlike [AndroidX Media ExoPlayer](https://github.com/androidx/media) which also 
 
 - Android min API 23.
 - RTSP/RTSPS over TCP.
-- Video H.264 only.
+- Video H.264 and H.265/HEVC.
 - Audio AAC LC only.
 - Basic/Digest authentication.
 - Supports majority of RTSP IP cameras.
@@ -166,7 +166,9 @@ rtsp.stop()
 
 ### 5) YUV frame
 
-You can still use library with H264 to YUV decoding.
+You can still use the library with H.264 or H.265/HEVC to YUV decoding.
+Frames requested through `setRequestYuv(true)` are returned as tightly packed NV21 data;
+decoder crop, row stride and pixel stride are already applied.
 
 ```kotlin
 // ... build rtsp
