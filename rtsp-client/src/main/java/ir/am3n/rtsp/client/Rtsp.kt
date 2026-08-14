@@ -104,36 +104,55 @@ class Rtsp {
         override fun run() {
             onRtspClientStarted()
             try {
-                endpointUris.forEachIndexed { index, endpointUri ->
-                    if (rtspStopped.get() || terminalUnauthorized) return@forEachIndexed
-                    endpointConnected = false
-                    val port = if (endpointUri.port == -1) DEFAULT_RTSP_PORT else endpointUri.port
-                    var socket: Socket? = null
-                    try {
-                        if (DEBUG) Log.d(TAG, "Connecting to ${endpointUri.host}:$port...")
-                        socket = NetUtils.createSocketAndConnect(endpointUri, port, timeout)
-                        val rtspClient = RtspClient.Builder(
-                            socket, endpointUri.toString(), rtspStopped, clientListener
-                        )
-                            .requestVideo(playVideo)
-                            .requestAudio(playAudio)
-                            .withUserAgent(userAgent)
-                            .withCredentials(username, password)
-                            .build()
-                        rtspClient.execute()
-                    } catch (t: Throwable) {
-                        endpointFailureMessage = t.message
-                        if (DEBUG) Log.w(TAG, "Endpoint failed: $endpointUri", t)
-                    } finally {
-                        socket?.let { NetUtils.closeSocket(it) }
+                val execution = EndpointFallbackExecutor.execute(
+                    endpointUris,
+                    isStopped = { rtspStopped.get() },
+                    attempt = { endpointUri ->
+                        endpointConnected = false
+                        terminalUnauthorized = false
+                        endpointFailureMessage = null
+                        val port = if (endpointUri.port == -1) DEFAULT_RTSP_PORT else endpointUri.port
+                        var socket: Socket? = null
+                        try {
+                            if (DEBUG) Log.d(TAG, "Connecting to ${endpointUri.host}:$port...")
+                            socket = NetUtils.createSocketAndConnect(endpointUri, port, timeout)
+                            val rtspClient = RtspClient.Builder(
+                                socket, endpointUri.toString(), rtspStopped, clientListener
+                            )
+                                .requestVideo(playVideo)
+                                .requestAudio(playAudio)
+                                .withUserAgent(userAgent)
+                                .withCredentials(username, password)
+                                .build()
+                            rtspClient.execute()
+                        } catch (t: Throwable) {
+                            endpointFailureMessage = t.message
+                            if (DEBUG) Log.w(TAG, "Endpoint failed: $endpointUri", t)
+                        } finally {
+                            socket?.let { NetUtils.closeSocket(it) }
+                        }
+                        when {
+                            rtspStopped.get() -> EndpointFallbackExecutor.ExecutionResult(
+                                EndpointFallbackExecutor.AttemptResult.STOPPED
+                            )
+                            terminalUnauthorized -> EndpointFallbackExecutor.ExecutionResult(
+                                EndpointFallbackExecutor.AttemptResult.UNAUTHORIZED
+                            )
+                            endpointConnected -> EndpointFallbackExecutor.ExecutionResult(
+                                EndpointFallbackExecutor.AttemptResult.CONNECTED
+                            )
+                            else -> EndpointFallbackExecutor.ExecutionResult(
+                                EndpointFallbackExecutor.AttemptResult.FAILED,
+                                endpointFailureMessage
+                            )
+                        }
+                    },
+                    onFallback = { _, next ->
+                        if (DEBUG) Log.i(TAG, "Trying fallback endpoint $next")
                     }
-                    if (endpointConnected || rtspStopped.get() || terminalUnauthorized) return@forEachIndexed
-                    if (index < endpointUris.lastIndex) {
-                        if (DEBUG) Log.i(TAG, "Trying fallback endpoint ${endpointUris[index + 1]}")
-                    }
-                }
-                if (!rtspStopped.get() && !endpointConnected && !terminalUnauthorized) {
-                    uiHandler.post { statusListener?.onFailed(endpointFailureMessage) }
+                )
+                if (execution.result == EndpointFallbackExecutor.AttemptResult.FAILED) {
+                    uiHandler.post { statusListener?.onFailed(execution.lastFailureMessage) }
                 }
             } finally {
                 onRtspClientStopped()
