@@ -103,35 +103,67 @@ class Rtsp {
 
         override fun run() {
             onRtspClientStarted()
-            val port = if (uri.port == -1) DEFAULT_RTSP_PORT else uri.port
             try {
-                if (DEBUG) Log.d(TAG, "Connecting to ${uri.host.toString()}:$port...")
-
-                val socket: Socket = NetUtils.createSocketAndConnect(uri, port, timeout)
-
-                // Blocking call until stopped variable is true or connection failed
-                val rtspClient = RtspClient.Builder(socket, uri.toString(), rtspStopped, clientListener)
-                    .requestVideo(playVideo)
-                    .requestAudio(playAudio)
-                    .withUserAgent(userAgent)
-                    .withCredentials(username, password)
-                    .build()
-
-                rtspClient.execute()
-
-                NetUtils.closeSocket(socket)
-
+                val execution = EndpointFallbackExecutor.execute(
+                    endpointUris,
+                    isStopped = { rtspStopped.get() },
+                    attempt = { endpointUri ->
+                        endpointConnected = false
+                        terminalUnauthorized = false
+                        endpointFailureMessage = null
+                        val port = if (endpointUri.port == -1) DEFAULT_RTSP_PORT else endpointUri.port
+                        var socket: Socket? = null
+                        try {
+                            if (DEBUG) Log.d(TAG, "Connecting to ${endpointUri.host}:$port...")
+                            socket = NetUtils.createSocketAndConnect(endpointUri, port, timeout)
+                            val rtspClient = RtspClient.Builder(
+                                socket, endpointUri.toString(), rtspStopped, clientListener
+                            )
+                                .requestVideo(playVideo)
+                                .requestAudio(playAudio)
+                                .withUserAgent(userAgent)
+                                .withCredentials(username, password)
+                                .build()
+                            rtspClient.execute()
+                        } catch (t: Throwable) {
+                            endpointFailureMessage = t.message
+                            if (DEBUG) Log.w(TAG, "Endpoint failed: $endpointUri", t)
+                        } finally {
+                            socket?.let { NetUtils.closeSocket(it) }
+                        }
+                        when {
+                            rtspStopped.get() -> EndpointFallbackExecutor.ExecutionResult(
+                                EndpointFallbackExecutor.AttemptResult.STOPPED
+                            )
+                            terminalUnauthorized -> EndpointFallbackExecutor.ExecutionResult(
+                                EndpointFallbackExecutor.AttemptResult.UNAUTHORIZED
+                            )
+                            endpointConnected -> EndpointFallbackExecutor.ExecutionResult(
+                                EndpointFallbackExecutor.AttemptResult.CONNECTED
+                            )
+                            else -> EndpointFallbackExecutor.ExecutionResult(
+                                EndpointFallbackExecutor.AttemptResult.FAILED,
+                                endpointFailureMessage
+                            )
+                        }
+                    },
+                    onFallback = { _, next ->
+                        if (DEBUG) Log.i(TAG, "Trying fallback endpoint $next")
+                    }
+                )
+                if (execution.result == EndpointFallbackExecutor.AttemptResult.FAILED) {
+                    uiHandler.post { statusListener?.onFailed(execution.lastFailureMessage) }
+                }
+            } finally {
                 onRtspClientStopped()
-
-            } catch (t: Throwable) {
-                t.printStackTrace()
-                onRtspClientStopped()
-                clientListener.onRtspFailed(t.message)
             }
         }
     }
 
-    private lateinit var uri: Uri
+    private var endpointUris: List<Uri> = emptyList()
+    @Volatile private var endpointConnected = false
+    @Volatile private var terminalUnauthorized = false
+    @Volatile private var endpointFailureMessage: String? = null
     private var username: String? = null
     private var password: String? = null
     private var userAgent: String? = null
@@ -170,6 +202,7 @@ class Rtsp {
         }
 
         override fun onRtspConnected(sdpInfo: SdpInfo) {
+            endpointConnected = true
             if (DEBUG) Log.v(TAG, "onRtspConnected()")
             if (sdpInfo.videoTrack != null) {
                 videoQueue.clear()
@@ -273,6 +306,7 @@ class Rtsp {
 
         override fun onRtspFailedUnauthorized() {
             if (DEBUG) Log.v(TAG, "onRtspFailedUnauthorized()")
+            terminalUnauthorized = true
             uiHandler.post {
                 statusListener?.onUnauthorized()
             }
@@ -280,9 +314,7 @@ class Rtsp {
 
         override fun onRtspFailed(message: String?) {
             if (DEBUG) Log.v(TAG, "onRtspFailed(message='$message')")
-            uiHandler.post {
-                statusListener?.onFailed(message)
-            }
+            endpointFailureMessage = message
         }
 
     }
@@ -304,11 +336,22 @@ class Rtsp {
     }
 
     fun init(url: String, username: String? = null, password: String? = null, userAgent: String? = null, timeout: Long = 5000) {
-        if (DEBUG) Log.v(TAG, "init(uri='$url', username=$username, password=$password, userAgent='$userAgent')")
-        this.uri = Uri.parse(url)
+        init(listOf(url), username, password, userAgent, timeout)
+    }
+
+    fun init(urls: List<String>, username: String? = null, password: String? = null, userAgent: String? = null, timeout: Long = 5000) {
+        require(urls.isNotEmpty()) { "At least one RTSP URL is required" }
+        require(urls.none { it.isBlank() }) { "RTSP URLs must not be blank" }
+        val parsedUris = urls.distinct().map(Uri::parse)
+        require(parsedUris.all { it.scheme.equals("rtsp", true) || it.scheme.equals("rtsps", true) }) {
+            "Only RTSP/RTSPS URLs are supported"
+        }
+        if (DEBUG) Log.v(TAG, "init(urls=$urls, username=$username, userAgent='$userAgent')")
+        this.endpointUris = parsedUris
+        this.terminalUnauthorized = false
         var urlUsername: String? = null
         var urlPassword: String? = null
-        Regex("//.*:.*@").find(url)?.value?.replace("//", "")?.replace("@", "")?.split(":")?.let {
+        Regex("//.*:.*@").find(urls.first())?.value?.replace("//", "")?.replace("@", "")?.split(":")?.let {
             urlUsername = it[0]
             urlPassword = it[1]
         }
