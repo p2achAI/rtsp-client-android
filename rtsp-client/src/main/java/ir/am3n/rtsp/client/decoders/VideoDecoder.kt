@@ -56,9 +56,6 @@ internal class VideoDecoder(
         private val DEQUEUE_INPUT_TIMEOUT_US = TimeUnit.MILLISECONDS.toMicros(500)
         private val DEQUEUE_OUTPUT_BUFFER_TIMEOUT_US = TimeUnit.MILLISECONDS.toMicros(100)
 
-        // Fallback thresholds: if we see no output for this long, or too many consecutive TRY_AGAINs, switch to SW
-        private val WATCHDOG_NO_OUTPUT_MS = 250L
-        private const val TRY_AGAIN_STREAK_LIMIT = 30
     }
 
     private val rect = Rect()
@@ -147,7 +144,7 @@ internal class VideoDecoder(
         }
 
         try {
-            Log.i(TAG, "Starting hardware video decoder...")
+            Log.i(TAG, "Starting $videoDecoderType video decoder...")
             var decoder = try {
                 createVideoDecoderAndStart(videoDecoderType)
             } catch (e: Throwable) {
@@ -337,8 +334,11 @@ internal class VideoDecoder(
                                     frameAlreadyDequeued = true
                                     tryAgainStreak++
                                     val now = System.currentTimeMillis()
-                                    if ((now - lastOutputOrFormatChangeMs) > WATCHDOG_NO_OUTPUT_MS ||
-                                        tryAgainStreak > TRY_AGAIN_STREAK_LIMIT) {
+                                    if (DecoderFallbackPolicy.shouldFallback(
+                                            videoDecoderType,
+                                            now - lastOutputOrFormatChangeMs,
+                                            tryAgainStreak,
+                                        )) {
                                         Log.w(TAG, "HW decoder appears stalled (no output ${now - lastOutputOrFormatChangeMs}ms, tryAgainStreak=$tryAgainStreak). Falling back to SW.")
                                         // Fallback: stop current decoder and switch to software
                                         stopAndReleaseVideoDecoder(decoder)
@@ -539,7 +539,10 @@ internal class VideoDecoder(
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
             )
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        val supportsLowLatency = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            decoder.codecInfo.getCapabilitiesForType(mimeType)
+                .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)
+        if (supportsLowLatency) {
             // format.setFeatureEnabled(android.media.MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency, true)
             // Request low-latency for the decoder. Not all of the decoders support that.
             format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)

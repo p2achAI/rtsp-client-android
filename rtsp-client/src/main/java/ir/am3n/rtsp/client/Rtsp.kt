@@ -23,6 +23,7 @@ import ir.am3n.rtsp.client.interfaces.RtspClientListener
 import ir.am3n.rtsp.client.interfaces.RtspFrameListener
 import ir.am3n.rtsp.client.interfaces.RtspStatusListener
 import ir.am3n.utils.AudioCodecType
+import ir.am3n.utils.DecoderType
 import ir.am3n.utils.NetUtils
 import ir.am3n.utils.VideoCodecType
 import ir.am3n.utils.VideoCodecUtils
@@ -33,6 +34,13 @@ import kotlin.coroutines.suspendCoroutine
 import kotlin.math.min
 
 class Rtsp {
+
+    private var videoDecoderType: DecoderType = DecoderType.SOFTWARE
+
+    /** Selects the preferred decoder for the next RTSP session. Hardware falls back to software. */
+    fun setVideoDecoderType(type: DecoderType) {
+        videoDecoderType = type
+    }
 
     companion object {
 
@@ -438,7 +446,8 @@ class Rtsp {
             videoDecoder = VideoDecoder(
                 surface = null, surfaceView, requestMediaImage, requestYuv, requestBitmap,
                 videoMimeType, sdpInfo.videoTrack!!.frameWidth, sdpInfo.videoTrack!!.frameHeight, rotation = 0,
-                videoQueue, clientListener = clientListener, vps = sdpInfo.videoTrack!!.vps,
+                videoQueue, videoDecoderType = videoDecoderType,
+                clientListener = clientListener, vps = sdpInfo.videoTrack!!.vps,
                 sps = sdpInfo.videoTrack!!.sps, pps = sdpInfo.videoTrack!!.pps
             )
             videoDecoder!!.start()
